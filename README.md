@@ -56,7 +56,7 @@ curl -fsSL https://raw.githubusercontent.com/btucker/bd-binaries/main/darwin_arm
 
 ### Recommended Session-Start Hook
 
-Create a `.claude/hooks/session-start.sh` that tries multiple installation methods with this repo as the fallback:
+Create a `.claude/hooks/session-start.sh` that tries npm first, then falls back to downloading from this repo:
 
 ```bash
 #!/bin/bash
@@ -64,13 +64,10 @@ Create a `.claude/hooks/session-start.sh` that tries multiple installation metho
 # .claude/hooks/session-start.sh
 echo "Setting up bd (beads issue tracker)..."
 
-# Try npm first, fall back to go install, then binary download
+# Try npm first, fall back to binary download
 if ! command -v bd &> /dev/null; then
     if npm install -g @beads/bd --quiet 2>/dev/null && command -v bd &> /dev/null; then
         echo "Installed via npm"
-    elif command -v go &> /dev/null && go install github.com/steveyegge/beads/cmd/bd@latest 2>/dev/null; then
-        export PATH="$PATH:$HOME/go/bin"
-        echo "Installed via go install"
     else
         # Fallback: download pre-built binary (works in Claude Code Web)
         echo "Trying binary download fallback..."
@@ -89,8 +86,7 @@ bd version
 
 This hook:
 1. Tries `npm install` first (fastest if available)
-2. Falls back to `go install` (if Go is installed)
-3. Falls back to downloading the pre-built binary from this repo (works in Claude Code Web where npm/go are blocked)
+2. Falls back to downloading the pre-built binary from this repo (works in Claude Code Web where npm is blocked)
 
 ## Automatic Updates
 
