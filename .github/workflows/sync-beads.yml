@@ -1,0 +1,156 @@
+name: Sync Beads Binaries
+
+on:
+  schedule:
+    # Run daily at 6 AM UTC
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force update even if version matches'
+        required: false
+        default: 'false'
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get latest beads release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Get latest release info from steveyegge/beads
+          RELEASE_INFO=$(gh api repos/steveyegge/beads/releases/latest)
+
+          TAG_NAME=$(echo "$RELEASE_INFO" | jq -r '.tag_name')
+          RELEASE_NAME=$(echo "$RELEASE_INFO" | jq -r '.name')
+          PUBLISHED_AT=$(echo "$RELEASE_INFO" | jq -r '.published_at')
+
+          echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "name=$RELEASE_NAME" >> $GITHUB_OUTPUT
+          echo "published_at=$PUBLISHED_AT" >> $GITHUB_OUTPUT
+
+          echo "Latest release: $TAG_NAME ($RELEASE_NAME)"
+          echo "Published: $PUBLISHED_AT"
+
+      - name: Check if update needed
+        id: check
+        run: |
+          CURRENT_VERSION=""
+          if [ -f VERSION ]; then
+            CURRENT_VERSION=$(cat VERSION)
+          fi
+
+          echo "Current version: $CURRENT_VERSION"
+          echo "Latest version: ${{ steps.release.outputs.tag }}"
+
+          if [ "$CURRENT_VERSION" = "${{ steps.release.outputs.tag }}" ] && [ "${{ inputs.force }}" != "true" ]; then
+            echo "Already up to date"
+            echo "needs_update=false" >> $GITHUB_OUTPUT
+          else
+            echo "Update needed"
+            echo "needs_update=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Download and extract binaries
+        if: steps.check.outputs.needs_update == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.release.outputs.tag }}"
+
+          # Create platform directories
+          mkdir -p linux_amd64 darwin_amd64 darwin_arm64
+
+          # Download release assets
+          echo "Downloading release assets for $TAG..."
+
+          # Get asset download URLs
+          ASSETS=$(gh api repos/steveyegge/beads/releases/latest --jq '.assets[] | "\(.name) \(.browser_download_url)"')
+
+          # Download each asset
+          while IFS= read -r line; do
+            NAME=$(echo "$line" | cut -d' ' -f1)
+            URL=$(echo "$line" | cut -d' ' -f2-)
+
+            echo "Downloading $NAME..."
+            gh release download "$TAG" --repo steveyegge/beads --pattern "$NAME" --dir /tmp/downloads || true
+          done <<< "$ASSETS"
+
+          # Extract binaries to appropriate directories
+          for archive in /tmp/downloads/*.tar.gz; do
+            if [ -f "$archive" ]; then
+              BASENAME=$(basename "$archive")
+              echo "Extracting $BASENAME..."
+
+              # Determine target directory based on filename
+              if [[ "$BASENAME" == *"linux"*"amd64"* ]] || [[ "$BASENAME" == *"linux-amd64"* ]] || [[ "$BASENAME" == *"linux_amd64"* ]]; then
+                tar -xzf "$archive" -C linux_amd64 --strip-components=0 2>/dev/null || tar -xzf "$archive" -C linux_amd64
+                # Find and move the bd binary if nested
+                find linux_amd64 -name "bd" -type f -exec mv {} linux_amd64/bd \; 2>/dev/null || true
+              elif [[ "$BASENAME" == *"darwin"*"arm64"* ]] || [[ "$BASENAME" == *"darwin-arm64"* ]] || [[ "$BASENAME" == *"darwin_arm64"* ]]; then
+                tar -xzf "$archive" -C darwin_arm64 --strip-components=0 2>/dev/null || tar -xzf "$archive" -C darwin_arm64
+                find darwin_arm64 -name "bd" -type f -exec mv {} darwin_arm64/bd \; 2>/dev/null || true
+              elif [[ "$BASENAME" == *"darwin"*"amd64"* ]] || [[ "$BASENAME" == *"darwin-amd64"* ]] || [[ "$BASENAME" == *"darwin_amd64"* ]]; then
+                tar -xzf "$archive" -C darwin_amd64 --strip-components=0 2>/dev/null || tar -xzf "$archive" -C darwin_amd64
+                find darwin_amd64 -name "bd" -type f -exec mv {} darwin_amd64/bd \; 2>/dev/null || true
+              fi
+            fi
+          done
+
+          # Handle zip files if present
+          for archive in /tmp/downloads/*.zip; do
+            if [ -f "$archive" ]; then
+              BASENAME=$(basename "$archive")
+              echo "Extracting $BASENAME..."
+
+              TMPDIR=$(mktemp -d)
+              unzip -q "$archive" -d "$TMPDIR"
+
+              if [[ "$BASENAME" == *"linux"*"amd64"* ]]; then
+                find "$TMPDIR" -name "bd" -type f -exec cp {} linux_amd64/bd \;
+              elif [[ "$BASENAME" == *"darwin"*"arm64"* ]]; then
+                find "$TMPDIR" -name "bd" -type f -exec cp {} darwin_arm64/bd \;
+              elif [[ "$BASENAME" == *"darwin"*"amd64"* ]]; then
+                find "$TMPDIR" -name "bd" -type f -exec cp {} darwin_amd64/bd \;
+              fi
+
+              rm -rf "$TMPDIR"
+            fi
+          done
+
+          # Make binaries executable
+          chmod +x linux_amd64/bd darwin_amd64/bd darwin_arm64/bd 2>/dev/null || true
+
+          # List what we have
+          echo ""
+          echo "Extracted binaries:"
+          ls -la linux_amd64/ darwin_amd64/ darwin_arm64/ 2>/dev/null || true
+
+          # Update version file
+          echo "$TAG" > VERSION
+
+      - name: Commit and push changes
+        if: steps.check.outputs.needs_update == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            TAG="${{ steps.release.outputs.tag }}"
+            git commit -m "Update beads binaries to $TAG"
+            git push
+            echo "Pushed updated binaries for $TAG"
+          fi
