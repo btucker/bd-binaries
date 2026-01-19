@@ -54,27 +54,43 @@ curl -fsSL https://raw.githubusercontent.com/btucker/bd-binaries/main/darwin_amd
 curl -fsSL https://raw.githubusercontent.com/btucker/bd-binaries/main/darwin_arm64/bd -o bd
 ```
 
-### Example Session-Start Hook
+### Recommended Session-Start Hook
 
-Create a `.claude/hooks/session-start.sh`:
+Create a `.claude/hooks/session-start.sh` that tries multiple installation methods with this repo as the fallback:
 
 ```bash
 #!/bin/bash
-set -e
 
-BD_PATH="${HOME}/.local/bin/bd"
-BD_URL="https://raw.githubusercontent.com/btucker/bd-binaries/main/linux_amd64/bd"
+# .claude/hooks/session-start.sh
+echo "Setting up bd (beads issue tracker)..."
 
-if [ ! -f "$BD_PATH" ]; then
-    mkdir -p "$(dirname "$BD_PATH")"
-    echo "Installing bd..."
-    curl -fsSL "$BD_URL" -o "$BD_PATH"
-    chmod +x "$BD_PATH"
-    echo "bd installed successfully"
+# Try npm first, fall back to go install, then binary download
+if ! command -v bd &> /dev/null; then
+    if npm install -g @beads/bd --quiet 2>/dev/null && command -v bd &> /dev/null; then
+        echo "Installed via npm"
+    elif command -v go &> /dev/null && go install github.com/steveyegge/beads/cmd/bd@latest 2>/dev/null; then
+        export PATH="$PATH:$HOME/go/bin"
+        echo "Installed via go install"
+    else
+        # Fallback: download pre-built binary (works in Claude Code Web)
+        echo "Trying binary download fallback..."
+        BD_PATH="${HOME}/.local/bin/bd"
+        mkdir -p "$(dirname "$BD_PATH")"
+        curl -fsSL https://raw.githubusercontent.com/btucker/bd-binaries/main/linux_amd64/bd -o "$BD_PATH"
+        chmod +x "$BD_PATH"
+        export PATH="${HOME}/.local/bin:$PATH"
+        echo "Installed via binary download"
+    fi
 fi
 
-export PATH="${HOME}/.local/bin:$PATH"
+# Verify and show version
+bd version
 ```
+
+This hook:
+1. Tries `npm install` first (fastest if available)
+2. Falls back to `go install` (if Go is installed)
+3. Falls back to downloading the pre-built binary from this repo (works in Claude Code Web where npm/go are blocked)
 
 ## Automatic Updates
 
